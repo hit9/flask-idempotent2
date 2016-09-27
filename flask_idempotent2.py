@@ -274,11 +274,12 @@ class Idempotent(object):
 
         @functools.wrap(func)
         def wrapped_view_function(*args, **kwargs):
-            cached_response = self.get_cached_response(keyfunc)
+            idempotent_id = keyfunc()
+            cached_response = self.get_cached_response(idempotent_id)
             if cached_response is not None:
                 return cached_response
             response = func(*args, **kwargs)
-            self.set_response_cache(response, timeout, keyfunc)
+            self.set_response_cache(idempotent_id, response, timeout)
             return response
         wrapped_view_function._idempotent_wrapped = True
         return wrapped_view_function
@@ -301,7 +302,8 @@ class Idempotent(object):
 
     def dumps_response_and_changed_instances(self, response):
         """Dumps response and changed instances into string to used as redis
-        cached value. The serialization is based on ``pickle``.
+        cached value. The serialization is based on ``pickle``. Returns a
+        tuple in format of `(picked, instance_strings)`.
 
         :param response: The `flask.Response` instance to be dump as string.
         """
@@ -329,19 +331,50 @@ class Idempotent(object):
             instances.append(instance_str)
 
         data.append(instances)
-        return pickle.dumps(data)
+        return pickle.dumps(data), instances
 
-    def get_cached_response(self, keyfunc):
+    def get_cached_response(self, idempotent_id):
         """Get idempotent request cache before view function is called. Returns
-        ``None`` on not found.
+        ``None`` on cache miss.
 
-        :param func: Flask view function to call.
-        :param keyfunc: `keyfunc` to distinguish requests.
+        :param idempotent_id: Idempotent reuqest string id produced by
+           `keyfunc`.
         """
-        idempotent_id = keyfunc()
+        # Get cached response and affected instances.
         key = self.format_redis_key(idempotent_id)
         value = self.redis.get(key)
-        pass  # FIXME
+        if not value:
+            return  # Miss
 
-    def set_response_cache(self, response, timeout, keyfunc):
-        pass
+        # Get affected instances and validate
+        response, instances = self.loads_cached_value(value)
+        keys = [self.format_redis_key(k) for k in instances]
+        values = self.redis.mget(keys)
+
+        for value in values:
+            if value != idempotent_id:
+                self.redis.delete(key)
+                return  # Miss
+        return response  # Hit
+
+    def set_response_cache(self, idempotent_id, response, timeout):
+        """Set idempotent request cache after view function is actually called.
+
+        :param response: The response to cache.
+        :param timeout: Cache expiration in seconds.
+        :param idempotent_id: Idempotent reuqest string id produced by
+           `keyfunc`.
+        """
+        pipeline = self.redis.pipeline()
+        value, instances = self.dumps_response_and_changed_instances(response)
+
+        # Cache response by `idempotent_id`.
+        key = self.format_redis_key(idempotent_id)
+        pipeline.setex(key, timeout, value)
+
+        # Cache affected instances.
+        for instance_str in instances:
+            pipeline.setex(self.format_redis_key(instance_str), timeout,
+                           idempotent_id)
+
+        pipeline.execute()
