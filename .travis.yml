@@ -2,12 +2,18 @@ language: python
 
 python:
   - 2.7
-  - 3.3
   - 3.4
   - 3.5
+
+services:
+  - postgresql
+  - redis-server
 
 install:
   - pip install -r dev_requirements.txt
   - pip install -r requirements.txt
 
-script: flake8 flask_idempotent2.py
+before_script:
+  - psql -c 'create database flask_idempotent2_unittesting;' -U postgres
+
+script: make unittest
