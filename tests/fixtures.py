@@ -121,6 +121,8 @@ def patch_client(c):
         if r.data:
             if sys.version_info.major == 3:
                 data = str(r.data, 'utf8')
+            else:
+                data = r.data
             r.json = json.loads(data)
         return r
     c.open = open
