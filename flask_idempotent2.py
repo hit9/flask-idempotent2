@@ -23,8 +23,8 @@ __version__ = '0.0.1'
 
 
 def gen_keyfunc(endpoint=True, http_method=True, url_rule=True, view_args=True,
-                request_json=True, request_headers=None, flask_session=True,
-                remote_addr=True):
+                request_json=True, request_args=True, request_headers=None,
+                flask_session=True, remote_addr=True):
     """Generate a `keyfunc` that distinguishes requests on different
     dimensions.
 
@@ -41,6 +41,9 @@ def gen_keyfunc(endpoint=True, http_method=True, url_rule=True, view_args=True,
     :param request_json: Defaults to ``True``. When ``True``, idempotent
        requests will be distinguished by request json body, actually by the
        flask ``request.get_json()``.
+    :param request_args: Defaults to ``True``. When ``True``, idempotent
+       requests will be distinguished by request query arguments, actually by
+       the flask ``request.args``.
     :param request_headers: An optional dictionary of request headers to
        distinguish idempotent requests.
     :param flask_session: Defaults to ``True``. When ``True``, idempotent
@@ -72,6 +75,12 @@ def gen_keyfunc(endpoint=True, http_method=True, url_rule=True, view_args=True,
                 dimensions['request_json'] = 'None'
             else:
                 dimensions['request_json'] = str(sorted(data.items()))
+        if request_args:
+            data = request.args
+            if data is None:
+                dimensions['request_args'] = 'None'
+            else:
+                dimensions['request_args'] = str(sorted(data.items()))
         if request_headers:
             data = {}
             for name in request_headers:
@@ -192,10 +201,14 @@ class Idempotent(object):
         if reserved_endpoints is None:
             reserved_endpoints = ['static']
 
-        for endpoint, view_func in self.app.view_functions.items():
-            if endpoint in reserved_endpoints:
+        for url_rule in self.app.url_map.iter_rules():
+            if url_rule.endpoint in reserved_endpoints:
                 continue
-            self.wrap_view_func(view_func)
+            for http_method in url_rule.methods:
+                if http_method in http_methods:
+                    view_function = self.app.view_functions[url_rule.endpoint]
+                    self.app.view_functions[url_rule.endpoint] = \
+                        self.wrap_view_func(view_function)
 
     ###
     # SQLAlchemy Events
