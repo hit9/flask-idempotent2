@@ -213,7 +213,8 @@ class Idempotent(object):
         event.listen(self.session_factory, 'after_commit',
                      self.record_committed_changes)
 
-    def record_changed_instances(self, session, flush_context=None, instances=None):
+    def record_changed_instances(self, session, flush_context=None,
+                                 instances=None):
         """Record changed resource instances to ``flask.g`` before sqlalchemy
         session flush or commit. The ``flask.g`` is request scoped, it's new
         for each request.
