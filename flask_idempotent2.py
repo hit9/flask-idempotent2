@@ -84,9 +84,9 @@ def gen_keyfunc(endpoint=True, http_method=True, url_rule=True, view_args=True,
                 'X-Forwarded-For',
                 request.remote_addr)
         # Use hashed stringify dimensions
-        origin_key = str(dimensions)
+        origin_key = str(sorted(dimensions.items()))
         sha = hashlib.sha1()
-        sha.update(origin_key)
+        sha.update(origin_key.encode('utf8'))
         return sha.hexdigest()
     return keyfunc
 
@@ -113,7 +113,7 @@ class Idempotent(object):
     :param redis: A redis client constructed by `redis-py`.
     :param session_factory: A sqlalchemy session factory.
     :param default_timeout: The redis cache timeout, or expiration in
-       seconds, for all view functions by default. Default to `20`.
+       seconds, for all view functions by default. Default to `30`.
     :param default_keyfunc: `keyfunc` for all view functions by default.
        Default to ``gen_keyfunc()``.
     :param redis_key_prefix: The key prefix string to use in redis. Default to
@@ -123,7 +123,7 @@ class Idempotent(object):
        requests to be executed one by one.
     """
 
-    def __init__(self, app, redis, session_factory, default_timeout=20,
+    def __init__(self, app, redis, session_factory, default_timeout=30,
                  default_keyfunc=None, redis_key_prefix='idempotent',
                  enable_idempotent_lock=True):
         self.app = app
@@ -213,7 +213,7 @@ class Idempotent(object):
         event.listen(self.session_factory, 'after_commit',
                      self.record_committed_changes)
 
-    def record_changed_instances(self, session, flush_context, instances):
+    def record_changed_instances(self, session, flush_context=None, instances=None):
         """Record changed resource instances to ``flask.g`` before sqlalchemy
         session flush or commit. The ``flask.g`` is request scoped, it's new
         for each request.
@@ -265,6 +265,7 @@ class Idempotent(object):
 
         """
         if getattr(func, '_idempotent_wrapped', False):
+            # Register only once.
             return func
 
         if timeout is None:
@@ -272,7 +273,7 @@ class Idempotent(object):
         if keyfunc is None:
             keyfunc = self.default_keyfunc
 
-        @functools.wrap(func)
+        @functools.wraps(func)
         def wrapped_view_function(*args, **kwargs):
             idempotent_id = keyfunc()
             cached_response = self.get_cached_response(idempotent_id)
@@ -315,7 +316,7 @@ class Idempotent(object):
             response.freeze()
         data.append(response)
 
-        instances = []
+        instances = set()
 
         # Committed instances, in format of ``[string, ...]``. Each
         # ``instance_str`` is constructed by resource name and primary key
@@ -326,9 +327,9 @@ class Idempotent(object):
                 cls = instance_state.class_
                 name = cls.__name__  # resource name
                 pk_column = inspect(cls).primary_key[0]  # pk name
-                pk = getattr(instance, pk_column, None)
+                pk = getattr(instance, pk_column.name, None)
                 instance_str = '{0}:{1}'.format(name, pk)
-            instances.append(instance_str)
+            instances.add(instance_str)
 
         data.append(instances)
         return pickle.dumps(data), instances
@@ -348,13 +349,13 @@ class Idempotent(object):
 
         # Get affected instances and validate
         response, instances = self.loads_cached_value(value)
-        keys = [self.format_redis_key(k) for k in instances]
-        values = self.redis.mget(keys)
-
-        for value in values:
-            if value != idempotent_id:
-                self.redis.delete(key)
-                return  # Miss
+        if instances:
+            keys = [self.format_redis_key(k) for k in instances]
+            values = self.redis.mget(keys)
+            for value in values:
+                if value.decode('utf8') != idempotent_id:
+                    self.redis.delete(key)
+                    return  # Miss
         return response  # Hit
 
     def set_response_cache(self, idempotent_id, response, timeout):
