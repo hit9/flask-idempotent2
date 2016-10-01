@@ -2,3 +2,4 @@
 *.pyc
 __pycache__
 .cache
+flask_idempotent2.egg-info
