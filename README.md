@@ -31,7 +31,7 @@ Usage
    @idempotent
    def api1():
        pass
-   
+
    @app.route('/api2')
    @idempotent.parametrize(timeout=60)
    def api2():

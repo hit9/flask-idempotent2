@@ -14,7 +14,7 @@ import functools
 import hashlib
 import pickle
 
-from flask import g, request, session, Response
+from flask import g, request, session as flask_session, Response
 from sqlalchemy import event
 from sqlalchemy.inspection import inspect
 
@@ -22,81 +22,69 @@ from sqlalchemy.inspection import inspect
 __version__ = '0.0.1'
 
 
-def gen_keyfunc(endpoint=True, http_method=True, url_rule=True, view_args=True,
-                request_json=True, request_args=True, request_headers=None,
-                flask_session=True, remote_addr=True):
+def gen_keyfunc(path=True, method=True, query_string=True, data=True,
+                headers=None, session=True, content_type=True,
+                content_length=True, remote_addr=True, use_checksum=True):
     """Generate a `keyfunc` that distinguishes requests on different
     dimensions.
 
-    :param endpoint: Defaults to ``True``. When ``True``, idempotent requests
-       will be distinguished by request endpoint.
-    :param http_method: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by request http method.
-    :param url_rule: Defaults to ``True``. When ``True``, idempotent requests
-       will be distinguished by `url_rule`, actually by the flask
-       ``str(request.url_rule)``, e.g. `/<int:id>''.
-    :param view_args: Defaults to ``True``. When ``True``, idempotent requests
-       will be distinguished by `view_args`, actually by the flask
-       ``request.view_args`.
-    :param request_json: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by request json body, actually by the
-       flask ``request.get_json()``.
-    :param request_args: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by request query arguments, actually by
-       the flask ``request.args``.
-    :param request_headers: An optional dictionary of request headers to
-       distinguish idempotent requests.
-    :param flask_session: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by `flask.session`.
+    :param path: Defaults to ``True``. When ``True``, idempotent requests will
+       be distinguished by ``request.path``.
+    :param method: Defaults to ``True``. When ``True``, idempotent requests
+       will be distinguished by ``request.method``.
+    :param query_string: Defaults to ``True``. When ``True``, idempotent
+       requests be distinguished by ``request.query_string``.
+    :param data: Defaults to ``True``. When ``True``, idempotent requests will
+       be distinguished by ``request.data``.
+    :param headers: An optional list of requets headers to distinguish
+       idemptent requests.
+    :param session: Defaults to ``True``. When ``True``, idempotent
+       requests will be distinguished by ``flask.session``.
+    :param content_type: Defaults to ``True``. When ``True``, idempotent
+       requests will be distinguished by ``request.content_type``.
+    :param content_length: Defaults to ``True``. When ``True``, idempotent
+       requests will be distinguished by ``request.content_length.
     :param remote_addr: Defaults to ``True``. When ``True``, idempotent
        requests will be distinguished by client remote address. The
        `remote_addr` to use is either `X-Forwarded-For` in headers or flask
        ``request.remote_addr``.
+    :param use_checksum: Defaults to ``True``. When ``True``, use checksum
+       string instead of original key.
 
     """
 
     def keyfunc():
         dimensions = {}
-        if endpoint:
-            dimensions['endpoint'] = request.endpoint
-        if http_method:
-            dimensions['http_method'] = request.method
-        if url_rule:
-            dimensions['url_rule'] = str(request.url_rule)
-        if view_args:
-            data = request.view_args
-            if data is None:
-                dimensions['view_args'] = 'None'
-            else:
-                dimensions['view_args'] = str(sorted(data.items()))
-        if request_json:
-            data = request.get_json()
-            if data is None:
-                dimensions['request_json'] = 'None'
-            else:
-                dimensions['request_json'] = str(sorted(data.items()))
-        if request_args:
-            data = request.args
-            if data is None:
-                dimensions['request_args'] = 'None'
-            else:
-                dimensions['request_args'] = str(sorted(data.items()))
-        if request_headers:
-            data = {}
-            for name in request_headers:
-                data[name] = request.headers.get(name, None)
-            dimensions['request_headers'] = str(sorted(data.items()))
-        if flask_session:
-            dimensions['flask_session'] = str(sorted(session.items()))
+        if path:
+            dimensions['path'] = request.path
+        if method:
+            dimensions['method'] = request.method
+        if query_string:
+            dimensions['query_string'] = request.query_string
+        if data:
+            dimensions['data'] = request.data
+        if headers:
+            d = {}
+            for name in headers:
+                d[name] = request.headers.get(name, None)
+            dimensions['headers'] = str(sorted(d.items()))
+        if session:
+            dimensions['session'] = str(sorted(flask_session.items()))
+        if content_type:
+            dimensions['content_type'] = request.content_type
+        if content_length:
+            dimensions['content_length'] = request.content_length
         if remote_addr:
             dimensions['remote_addr'] = request.headers.get(
                 'X-Forwarded-For',
                 request.remote_addr)
-        # Use hashed stringify dimensions
         origin_key = str(sorted(dimensions.items()))
-        sha = hashlib.sha1()
-        sha.update(origin_key.encode('utf8'))
-        return sha.hexdigest()
+        if use_checksum:
+            # Use hashed stringify dimensions
+            sha = hashlib.sha1()
+            sha.update(origin_key.encode('utf8'))
+            return sha.hexdigest()
+        return origin_key
     return keyfunc
 
 

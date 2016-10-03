@@ -106,6 +106,13 @@ def app(db_clear, redis_client, redis_clear):
         user = User(email=data['email'], password=data['password'])
         Session().add(user)
         return jsonify(email=user.email, password=user.password)
+
+    @app.route('/user/<int:id>', methods=['GET'])
+    @idempotent.parametrize(timeout=1)
+    def get_user(id):
+        return Session().query(User).get(id)
+
+    app.secret_key = 'secret'
     return app
 
 
