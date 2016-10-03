@@ -194,6 +194,8 @@ class Idempotent(object):
             for http_method in url_rule.methods:
                 if http_method in http_methods:
                     view_function = self.app.view_functions[url_rule.endpoint]
+                    if getattr(view_function, '_idempotent_forget', False):
+                        continue  # Skip forgetted funcs
                     self.app.view_functions[url_rule.endpoint] = \
                         self.wrap_view_func(view_function)
 
@@ -287,8 +289,12 @@ class Idempotent(object):
     ###
 
     def wrap_view_func(self, func, timeout=None, keyfunc=None):
-        """Wrap a flask `view_func` to be idempotent. A view function won't be
-        wrapped again if it's already wrapped.
+        """Wrap a flask `view_func` to be idempotent.
+
+        Notes:
+
+            1. A view function won't be wrapped again if it's already wrapped.
+            2. A view function won't be wraped if it's marked to forget.
 
         :param timeout: Idempotent cache expiration in redis, in seconds. If
            passed, it will be used instead of `default_timeout`.
