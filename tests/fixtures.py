@@ -116,6 +116,53 @@ def app(db_clear, redis_client, redis_clear):
     return app
 
 
+@pytest.fixture(scope='function')
+def auto_registered_app(db_clear, redis_client, redis_clear):
+    Session = scoped_session(sessionmaker(bind=engine,
+                                          autocommit=False,
+                                          expire_on_commit=False),
+                             scopefunc=_app_ctx_stack.__ident_func__)
+    app = Flask(__name__)
+    idempotent = Idempotent(app, redis_client, Session)
+
+    def defer_commit(func):
+        def wrapped(*args, **kwargs):
+            ret = func(*args, **kwargs)
+            session = Session()
+            try:
+                session.flush()
+                session.commit()
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise exc
+            return ret
+        return wrapped
+
+    @app.errorhandler(SQLAlchemyError)
+    def handle_sqlalchemy_exc(exc):
+        return jsonify(message='database error'), 500
+
+    @app.teardown_request
+    def close_session(exc):
+        Session.remove()
+
+    @app.route('/user', methods=['PUT'])
+    @defer_commit
+    def create_user():
+        data = request.get_json()
+        user = User(email=data['email'], password=data['password'])
+        Session().add(user)
+        return jsonify(email=user.email, password=user.password)
+
+    @app.route('/user/<int:id>', methods=['GET'])
+    def get_user(id):
+        return Session().query(User).get(id)
+
+    app.secret_key = 'secret'
+    idempotent.auto_register()
+    return app
+
+
 def patch_client(c):
     c._open = c.open
 

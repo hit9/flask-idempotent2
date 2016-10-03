@@ -24,8 +24,7 @@ __version__ = '0.0.1'
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,
                 headers=None, session=True, content_type=True,
-                content_length=True, remote_addr=True, use_checksum=True,
-                cached_per_request=True):
+                content_length=True, remote_addr=True, use_checksum=True):
     """Generate a `keyfunc` that distinguishes requests on different
     dimensions.
 
@@ -51,17 +50,9 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
        ``request.remote_addr``.
     :param use_checksum: Defaults to ``True``. When ``True``, use checksum
        string instead of original key.
-    :param cached_per_request: Defaults to ``True``. When ``True``, the result
-       request id string of generated `keyfunc` will be cached inside
-       ``flask.g``. Which results that the request id will be calculated only
-       once during one request.
-
     """
 
     def keyfunc():
-        if cached_per_request:
-            if getattr(g, '_idempotent_request_id', None):
-                return g._idempotent_request_id
         dimensions = {}
         if path:
             dimensions['path'] = request.path
@@ -87,15 +78,12 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
                 'X-Forwarded-For',
                 request.remote_addr)
         origin_key = str(sorted(dimensions.items()))
-        result = origin_key
         if use_checksum:
             # Use hashed stringify dimensions
             sha = hashlib.sha1()
             sha.update(origin_key.encode('utf8'))
-            result = sha.hexdigest()
-        if cached_per_request:
-            g._idempotent_request_id = result
-        return result
+            return sha.hexdigest()
+        return origin_key
     return keyfunc
 
 
@@ -209,6 +197,21 @@ class Idempotent(object):
                     self.app.view_functions[url_rule.endpoint] = \
                         self.wrap_view_func(view_function)
 
+    def forget(self, func):
+        """Do not register given view function as idempotent when use
+        ``auto_register``. Example::
+
+            @app.route('/api', methods=['PUT'])
+            @idempotent.forget
+            def forget_me():
+                pass
+
+        :param func: Flask view function to wrap.
+
+        """
+        func._idempotent_forget = True
+        return func
+
     ###
     # SQLAlchemy Events
     ###
@@ -294,6 +297,9 @@ class Idempotent(object):
            `default_keyfunc`.
 
         """
+        if getattr(func, '_idempotent_forget', False):
+            return func
+
         if getattr(func, '_idempotent_wrapped', False):
             # Register only once.
             return func
