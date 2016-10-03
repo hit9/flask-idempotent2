@@ -2,6 +2,7 @@
 
 import json
 import sys
+import random
 
 from flask import Flask, _app_ctx_stack, request, jsonify
 from sqlalchemy import create_engine, Column, String, Integer, text
@@ -111,6 +112,11 @@ def app(db_clear, redis_client, redis_clear):
     @idempotent.parametrize(timeout=1)
     def get_user(id):
         return Session().query(User).get(id)
+
+    @app.route('/random', methods=['GET'])
+    @idempotent.parametrize(timeout=1)
+    def get_random():
+        return jsonify(result=random.randint(1, 1000))
 
     app.secret_key = 'secret'
     return app
