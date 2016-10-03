@@ -19,7 +19,7 @@ from sqlalchemy import event
 from sqlalchemy.inspection import inspect
 
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,

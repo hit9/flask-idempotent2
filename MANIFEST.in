@@ -1,0 +1,2 @@
+include Makefile dev_requirements.txt requirements.txt LICENSE README.md example.py
+recursive-include tests *
