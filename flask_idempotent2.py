@@ -24,7 +24,8 @@ __version__ = '0.0.1'
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,
                 headers=None, session=True, content_type=True,
-                content_length=True, remote_addr=True, use_checksum=True):
+                content_length=True, remote_addr=True, use_checksum=True,
+                cached_per_request=True):
     """Generate a `keyfunc` that distinguishes requests on different
     dimensions.
 
@@ -50,10 +51,17 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
        ``request.remote_addr``.
     :param use_checksum: Defaults to ``True``. When ``True``, use checksum
        string instead of original key.
+    :param cached_per_request: Defaults to ``True``. When ``True``, the result
+       request id string of generated `keyfunc` will be cached inside
+       ``flask.g``. Which results that the request id will be calculated only
+       once during one request.
 
     """
 
     def keyfunc():
+        if cached_per_request:
+            if getattr(g, '_idempotent_request_id', None):
+                return g._idempotent_request_id
         dimensions = {}
         if path:
             dimensions['path'] = request.path
@@ -79,12 +87,15 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
                 'X-Forwarded-For',
                 request.remote_addr)
         origin_key = str(sorted(dimensions.items()))
+        result = origin_key
         if use_checksum:
             # Use hashed stringify dimensions
             sha = hashlib.sha1()
             sha.update(origin_key.encode('utf8'))
-            return sha.hexdigest()
-        return origin_key
+            result = sha.hexdigest()
+        if cached_per_request:
+            g._idempotent_request_id = result
+        return result
     return keyfunc
 
 
@@ -204,6 +215,9 @@ class Idempotent(object):
 
     def register_sqlalchemy_events(self):
         """Register sqlalchemy event listeners.
+
+        Note that registered hook functions will be called only if current
+        invoked view function is marked as idempotent.
         """
         event.listen(self.session_factory, 'before_flush',
                      self.record_changed_instances)
@@ -213,6 +227,14 @@ class Idempotent(object):
                      self.clear_changed_instances)
         event.listen(self.session_factory, 'after_commit',
                      self.record_committed_changes)
+
+    def should_call_sqlalchemy_hook(self):
+        """Returns ``True`` if current invoked view function is marked as
+        idempotent.
+        """
+        view_function = self.app.view_functions.get(request.endpoint, None)
+        return view_function and getattr(view_function, '_idempotent_wrapped',
+                                         False)
 
     def record_changed_instances(self, session, flush_context=None,
                                  instances=None):
@@ -224,6 +246,8 @@ class Idempotent(object):
         Session can emit SQL to the database many times within the scope of a
         transaction.
         """
+        if not self.should_call_sqlalchemy_hook():
+            return
         if not hasattr(g, '_idempotent_changes'):
             g._idempotent_changes = []
         # New instances.
@@ -239,6 +263,8 @@ class Idempotent(object):
     def clear_changed_instances(self, session):
         """Clear changed instances after sqlalchemy session rollback.
         """
+        if not self.should_call_sqlalchemy_hook():
+            return
         g._idempotent_changes = []
         g._idempotent_committed_changes = []
 
@@ -246,6 +272,8 @@ class Idempotent(object):
         """Record committed changes to ``flask.g`` after sqlalchemy session
         commit.
         """
+        if not self.should_call_sqlalchemy_hook():
+            return
         changes = getattr(g, '_idempotent_changes', None)
         if changes:
             g._idempotent_committed_changes = changes
