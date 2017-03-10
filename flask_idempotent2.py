@@ -20,7 +20,7 @@ from sqlalchemy import event
 from sqlalchemy.inspection import inspect
 
 
-__version__ = '0.0.3'
+__version__ = '0.0.4'
 
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,
@@ -416,16 +416,13 @@ class Idempotent(object):
         :param idempotent_id: Idempotent reuqest string id produced by
            `keyfunc`.
         """
-        pipeline = self.redis.pipeline()
         value, instances = self.dumps_response_and_changed_instances(response)
 
         # Cache response by `idempotent_id`.
         key = self.format_redis_key(idempotent_id)
-        pipeline.setex(key, timeout, value)
+        self.redis.setex(key, timeout, value)
 
         # Cache affected instances.
         for instance_str in instances:
-            pipeline.setex(self.format_redis_key(instance_str), timeout,
-                           idempotent_id)
-
-        pipeline.execute()
+            self.redis.setex(self.format_redis_key(instance_str), timeout,
+                             idempotent_id)
