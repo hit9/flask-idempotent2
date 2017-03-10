@@ -14,12 +14,13 @@ import functools
 import hashlib
 import pickle
 
-from flask import g, request, session as flask_session, Response
+from flask import g, request, session as flask_session, Response, \
+    _app_ctx_stack
 from sqlalchemy import event
 from sqlalchemy.inspection import inspect
 
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,
@@ -117,11 +118,13 @@ class Idempotent(object):
     :param enable_idempotent_lock: Default to ``True``. When ``True``, redis
        idempotent lock will be enabled. This lock makes concurrent idempotent
        requests to be executed one by one.
+    :param g_: The global context to use, defaults to be ``None``. Setting to
+       ``None`` means ``flask.g``.
     """
 
     def __init__(self, app, redis, session_factory, default_timeout=30,
                  default_keyfunc=None, redis_key_prefix='idempotent',
-                 enable_idempotent_lock=True):
+                 enable_idempotent_lock=True, g_=None):
         self.app = app
         self.redis = redis
         self.session_factory = session_factory
@@ -129,6 +132,7 @@ class Idempotent(object):
         self.default_keyfunc = default_keyfunc or gen_keyfunc()
         self.redis_key_prefix = redis_key_prefix
         self.enable_idempotent_lock = enable_idempotent_lock
+        self.g_ = g_ or g
         # Register sqlalchemy events.
         self.register_sqlalchemy_events()
 
@@ -236,15 +240,19 @@ class Idempotent(object):
     def should_call_sqlalchemy_hook(self):
         """Returns ``True`` if current invoked view function is marked as
         idempotent.
+        Returns ``False`` if current progress is out side flask request
+        context.
         """
+        if _app_ctx_stack.top is None:  # Outside flask
+            return False
         view_function = self.app.view_functions.get(request.endpoint, None)
         return view_function and getattr(view_function, '_idempotent_wrapped',
                                          False)
 
     def record_changed_instances(self, session, flush_context=None,
                                  instances=None):
-        """Record changed resource instances to ``flask.g`` before sqlalchemy
-        session flush or commit. The ``flask.g`` is request scoped, it's new
+        """Record changed resource instances to ``self.g_`` before sqlalchemy
+        session flush or commit. The ``self.g_`` is request scoped, it's new
         for each request.
 
         Note that the ``after_commit()`` hook is not per-flush, that is, the
@@ -253,36 +261,36 @@ class Idempotent(object):
         """
         if not self.should_call_sqlalchemy_hook():
             return
-        if not hasattr(g, '_idempotent_changes'):
-            g._idempotent_changes = []
+        if not hasattr(self.g_, '_idempotent_changes'):
+            self.g_._idempotent_changes = []
         # New instances.
         for instance in session.new:
-            g._idempotent_changes.append(instance)
+            self.g_._idempotent_changes.append(instance)
         # Dirty instances.
         for instance in session.dirty:
-            g._idempotent_changes.append(instance)
+            self.g_._idempotent_changes.append(instance)
         # Deleted instances.
         for instance in session.deleted:
-            g._idempotent_changes.append(instance)
+            self.g_._idempotent_changes.append(instance)
 
     def clear_changed_instances(self, session):
         """Clear changed instances after sqlalchemy session rollback.
         """
         if not self.should_call_sqlalchemy_hook():
             return
-        g._idempotent_changes = []
-        g._idempotent_committed_changes = []
+        self.g_._idempotent_changes = []
+        self.g_._idempotent_committed_changes = []
 
     def record_committed_changes(self, session):
-        """Record committed changes to ``flask.g`` after sqlalchemy session
+        """Record committed changes to ``self.g_`` after sqlalchemy session
         commit.
         """
         if not self.should_call_sqlalchemy_hook():
             return
-        changes = getattr(g, '_idempotent_changes', None)
+        changes = getattr(self.g_, '_idempotent_changes', None)
         if changes:
-            g._idempotent_committed_changes = changes
-            g._idempotent_changes = []
+            self.g_._idempotent_committed_changes = changes
+            self.g_._idempotent_changes = []
 
     ###
     # Idempotent Cache
@@ -363,7 +371,7 @@ class Idempotent(object):
         # Committed instances, in format of ``[string, ...]``. Each
         # ``instance_str`` is constructed by resource name and primary key
         # value, e.g. ``'User:1'``.
-        for instance in getattr(g, '_idempotent_committed_changes', []):
+        for instance in getattr(self.g_, '_idempotent_committed_changes', []):
             instance_state = inspect(instance)
             if instance_state.persistent:
                 cls = instance_state.class_
