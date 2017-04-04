@@ -79,10 +79,10 @@ Details
 5. All db changes during the `view_function` call will be recorded in redis, in format of `resource-instance` to `request-id`.A cached response is valid only if its affected resource instances are all last affected by the same `request-id`. If any other requests affects these db resources, the `request-id` will be reset, thus the cached response expires.
 
    | Key                                      | Value                                    |
-   | ---------------------------------------- | :--------------------------------------- |
-   | <app-name>:<api-name>:<request-id>       | <serialized-response>,<affected-resource-instances> |
-   | <affected-resource:id> *e.g.* `"User:1"` | <request-id>                             |
-   | <affected-resource:id>...                | ...                                      |
+   | ---------------------------------------- | -----------------------------------------|
+   | app-name>:api-name:request-id          | serialized-response, affected-resource-instances |
+   | affected-resource:id *e.g.* `"User:1"` | request-id                               |
+   | affected-resource:id...                | ...                                      |
 
 
 ### How requests are distinguished?
