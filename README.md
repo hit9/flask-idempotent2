@@ -47,15 +47,13 @@ Usage
    idempotent.auto_register()
    ```
 
-   Tell `flask_idempotent2` to foget a view function when use `auto_register`:
+   Tell `flask_idempotent2` to forget a view function when use `auto_register`:
 
    ```
    @idempotent.forget
    def dont_wrap_me():
        pass
    ```
-
-   ​
 
 Details
 -------
@@ -87,7 +85,7 @@ Details
 
 ### How requests are distinguished?
 
-Requests are distinguished by preconfigured `keyfunc`, which is a function with no argument and should return the `request_id`.
+Requests are distinguished by preconfigured `keyfunc`, which is a function with no arguments and should return the `request_id`.
 
 ```
 from flask_idempotent2 import Idempotent, gen_keyfunc
@@ -98,7 +96,7 @@ idempotent = Idempotent(app, redis_client, DBSession, keyfunc)
 
 ### Unittests problem with flask.g
 
-`flask.g` can't be accessed outside flask request context, so I suggest you use a threading local object instead:
+`flask.g` can't be accessed outside flask request context, so I suggest you to use a threading local object instead:
 
 ```
 import threading
