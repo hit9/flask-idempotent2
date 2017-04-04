@@ -4,7 +4,8 @@
     flask-idempotent2
     ~~~~~~~~~~~~~~~~~
 
-    Redis based idempotent support for sqlalchemy based flask applications.
+    Redis based automatic idempotent support for sqlalchemy based flask
+    applications.
 
     :copyright: (c) 2016 by Chao Wang (hit9).
     :license: BSD, see LICENSE for more details.
@@ -20,13 +21,13 @@ from sqlalchemy import event
 from sqlalchemy.inspection import inspect
 
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 
 
 def gen_keyfunc(path=True, method=True, query_string=True, data=True,
                 headers=None, session=True, content_type=True,
                 content_length=True, remote_addr=True, use_checksum=True):
-    """Generate a `keyfunc` that distinguishes requests on different
+    """Generates a `keyfunc` that distinguishes requests on different
     dimensions.
 
     :param path: Defaults to ``True``. When ``True``, idempotent requests will
@@ -51,6 +52,7 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
        ``request.remote_addr``.
     :param use_checksum: Defaults to ``True``. When ``True``, use checksum
        string instead of original key.
+
     """
 
     def keyfunc():
