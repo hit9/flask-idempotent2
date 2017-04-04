@@ -80,7 +80,7 @@ Details
 
    | Key                                      | Value                                    |
    | ---------------------------------------- | -----------------------------------------|
-   | app-name>:api-name:request-id          | serialized-response, affected-resource-instances |
+   | app-name:api-name:request-id           | serialized-response, affected-resource-instances |
    | affected-resource:id *e.g.* `"User:1"` | request-id                               |
    | affected-resource:id...                | ...                                      |
 
