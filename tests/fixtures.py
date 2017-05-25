@@ -3,6 +3,7 @@
 import json
 import sys
 import random
+import functools
 
 from flask import Flask, _app_ctx_stack, request, jsonify
 from sqlalchemy import create_engine, Column, String, Integer, text
@@ -12,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from flask_idempotent2 import Idempotent
 import redis
 import pytest
+import gevent
 
 
 ###
@@ -79,6 +81,7 @@ def app(db_clear, redis_client, redis_clear):
     idempotent = Idempotent(app, redis_client, Session)
 
     def defer_commit(func):
+        @functools.wraps(func)
         def wrapped(*args, **kwargs):
             ret = func(*args, **kwargs)
             session = Session()
@@ -106,6 +109,33 @@ def app(db_clear, redis_client, redis_clear):
         data = request.get_json()
         user = User(email=data['email'], password=data['password'])
         Session().add(user)
+        return jsonify(email=user.email, password=user.password)
+
+    @app.route('/user_or_return', methods=['PUT'])
+    @idempotent.lock(1)
+    @defer_commit
+    def create_or_return_user():
+        data = request.get_json()
+        user = Session().query(User)\
+            .filter(User.email == data['email'])\
+            .scalar()
+        if not user:
+            user = User(email=data['email'], password=data['password'])
+            Session().add(user)
+        return jsonify(email=user.email, password=user.password)
+
+    @app.route('/user_or_return_nolock', methods=['PUT'])
+    @defer_commit
+    def create_or_return_user_no_lock():
+        data = request.get_json()
+        user = Session().query(User)\
+            .filter(User.email == data['email'])\
+            .scalar()
+        # Assume the query above is a little slow
+        gevent.sleep(0.1)
+        if not user:
+            user = User(email=data['email'], password=data['password'])
+            Session().add(user)
         return jsonify(email=user.email, password=user.password)
 
     @app.route('/user/<int:id>', methods=['GET'])
