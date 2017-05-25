@@ -16,19 +16,6 @@ def test_simple(app, app_client):
     assert r.status_code != 200
 
 
-def test_auto_register(auto_registered_app):
-    for endpoint, view_function in auto_registered_app.view_functions.items():
-        if endpoint != 'static':
-            assert getattr(view_function, '_idempotent_wrapped', False)
-
-
-def test_forget(with_forget_app):
-    for endpoint, view_function in with_forget_app.view_functions.items():
-        if endpoint == 'get_user':
-            assert getattr(view_function, '_idempotent_forget', False)
-            assert not hasattr(view_function, '_idempotent_wrapped')
-
-
 def test_no_db_events_idempotent(app, app_client):
     r = app_client.get('/random')
     assert r.status_code == 200
