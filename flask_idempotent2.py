@@ -19,37 +19,19 @@ from flask import g, request, session as flask_session, Response, \
     _app_ctx_stack
 from sqlalchemy import event
 from sqlalchemy.inspection import inspect
+from redis.lock import Lock
 
 
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 
 
-def gen_keyfunc(path=True, method=True, query_string=True, data=True,
-                headers=None, session=True, content_type=True,
+def gen_keyfunc(endpoint=True, path=True, method=True, query_string=True,
+                data=True, headers=None, session=True, content_type=True,
                 content_length=True, remote_addr=True, use_checksum=True):
     """Generates a `keyfunc` that distinguishes requests on different
-    dimensions.
+    dimensions. Requests is considered to be different if on the dimension if
+    it is set.
 
-    :param path: Defaults to ``True``. When ``True``, idempotent requests will
-       be distinguished by ``request.path``.
-    :param method: Defaults to ``True``. When ``True``, idempotent requests
-       will be distinguished by ``request.method``.
-    :param query_string: Defaults to ``True``. When ``True``, idempotent
-       requests be distinguished by ``request.query_string``.
-    :param data: Defaults to ``True``. When ``True``, idempotent requests will
-       be distinguished by ``request.data``.
-    :param headers: An optional list of requets headers to distinguish
-       idemptent requests.
-    :param session: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by ``flask.session``.
-    :param content_type: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by ``request.content_type``.
-    :param content_length: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by ``request.content_length.
-    :param remote_addr: Defaults to ``True``. When ``True``, idempotent
-       requests will be distinguished by client remote address. The
-       `remote_addr` to use is either `X-Forwarded-For` in headers or flask
-       ``request.remote_addr``.
     :param use_checksum: Defaults to ``True``. When ``True``, use checksum
        string instead of original key.
 
@@ -57,6 +39,8 @@ def gen_keyfunc(path=True, method=True, query_string=True, data=True,
 
     def keyfunc():
         dimensions = {}
+        if endpoint:
+            dimensions['endpoint'] = request.endpoint
         if path:
             dimensions['path'] = request.path
         if method:
@@ -104,131 +88,134 @@ class Idempotent(object):
         idempotent = Idempotent(app, redis_client, Session)
 
         @app.route('/resource', methods=['PUT'])
-        @idempotent
-        def create_or_update():
+        @idempotent.cache(5)
+        def create_or_update_resource():
+            pass
+
+        @app.route('/another_resource', methods=['PUT'])
+        @idempotent.lock(5)
+        def create_or_update_another_resource():
             pass
 
     :param app: A flask application object to work with.
     :param redis: A redis client constructed by `redis-py`.
     :param session_factory: A sqlalchemy session factory.
-    :param default_timeout: The redis cache timeout, or expiration in
-       seconds, for all view functions by default. Default to `30`.
     :param default_keyfunc: `keyfunc` for all view functions by default.
        Default to ``gen_keyfunc()``.
+    :param default_redis_lock_class: The default redis-py lock class to use.
+       Defaults to be ``redis.lock.Lock``.
     :param redis_key_prefix: The key prefix string to use in redis. Default to
        ``'idempotent'``.
-    :param enable_idempotent_lock: Default to ``True``. When ``True``, redis
-       idempotent lock will be enabled. This lock makes concurrent idempotent
-       requests to be executed one by one.
     :param g_: The global context to use, defaults to be ``None``. Setting to
        ``None`` means ``flask.g``.
     """
 
-    def __init__(self, app, redis, session_factory, default_timeout=30,
-                 default_keyfunc=None, redis_key_prefix='idempotent',
-                 enable_idempotent_lock=True, g_=None):
+    REDIS_KEY_PREFIX_CACHE = 'cache'
+    REDIS_KEY_PREFIX_LOCK = 'lock'
+
+    def __init__(self, app, redis, session_factory, default_keyfunc=None,
+                 redis_key_prefix='idempotent', default_redis_lock_class=None,
+                 g_=None):
         self.app = app
         self.redis = redis
         self.session_factory = session_factory
-        self.default_timeout = default_timeout
         self.default_keyfunc = default_keyfunc or gen_keyfunc()
         self.redis_key_prefix = redis_key_prefix
-        self.enable_idempotent_lock = enable_idempotent_lock
+        if default_redis_lock_class is None:
+            default_redis_lock_class = Lock
+        self.default_redis_lock_class = default_redis_lock_class
         self.g_ = g_ or g
-        # Register sqlalchemy events.
-        self.register_sqlalchemy_events()
+
+        # This flag would be updated on first ``idempotent.cache`` registered.
+        self.sqlalchemy_events_registered = False
 
     ###
     # Public API
     ###
 
-    def __call__(self, func):
-        """Decorate given `func` to be an idempotent interface. Example::
+    def cache(self, timeout, keyfunc=None):
+        """Produce a decorator to wrap view function to cache responses for
+        given seconds. Example::
 
             @app.route('/api', methods=['PUT'])
-            @idempotent
+            @idempotent.cache(5)
             def api():
                 pass
 
-        :param func: Flask view function to wrap.
-
-        """
-        return self.wrap_view_func(func, timeout=None, keyfunc=None)
-
-    def parametrize(self, timeout=None, keyfunc=None):
-        """Produce a decorator to wrap view function to be an idempotent
-        interface. Example::
-
-            @app.route('/api', methods=['PUT'])
-            @idempotent.parametrize(timeout=5)
-            def api():
-                pass
-
-        :param timeout: Idempotent cache expiration in redis, in seconds. If
-           passed, it will be used instead of `default_timeout`.
+        :param timeout: Cache expiration in redis, in seconds.
         :param keyfunc: `keyfunc` to distinguish requests. Which can be
            generated by `gen_keyfunc`. If passed, it will be used instead of
            `default_keyfunc`.
 
+        Notes that if a function won't be wrapped again if it's already wrapped
+        by the ``idempotent.cache``.
+
+        Raises ``TypeError`` if this decorator tries to apply on a ``lock``
+        decorated function. The reason is that the idempotent makes the lock
+        miss. Instead, the ``lock`` decorator should be used outside the
+        ``cache``.
         """
 
         def decorator(func):
-            return self.wrap_view_func(func, timeout=timeout, keyfunc=keyfunc)
+            if getattr(func, '_idempotent_lock_wrapped', False):
+                raise TypeError(
+                    "Can't decorate `lock` decorated function by `cache`,"
+                    " in turn please!")
+            return self.wrap_cache(func, timeout, keyfunc=keyfunc)
         return decorator
 
-    def auto_register(self, http_methods=None, reserved_endpoints=None):
-        """Register view function with given `http_methods` as idempotent
-        interfaces. Example::
-
-            idempotent = Idempotent(app, redis_client, Session)
-            idempotent.auto_register()
-
-        :param http_methods: The http methods to discover view functions.
-           Default to ``['GET', 'PUT', 'DELETE']``.
-        :param reserved_endpoints: List of endpoints to be reserved. Default to
-           ``['static']``.
-
-        """
-        if http_methods is None:
-            http_methods = ['GET', 'PUT', 'DELETE']
-        if reserved_endpoints is None:
-            reserved_endpoints = ['static']
-
-        for url_rule in self.app.url_map.iter_rules():
-            if url_rule.endpoint in reserved_endpoints:
-                continue
-            for http_method in url_rule.methods:
-                if http_method in http_methods:
-                    view_function = self.app.view_functions[url_rule.endpoint]
-                    if getattr(view_function, '_idempotent_forget', False):
-                        continue  # Skip forgetted funcs
-                    self.app.view_functions[url_rule.endpoint] = \
-                        self.wrap_view_func(view_function)
-
-    def forget(self, func):
-        """Do not register given view function as idempotent when use
-        ``auto_register``. Example::
+    def lock(self, timeout, lock_class=None, blocking_timeout=None,
+             keyfunc=None):
+        """Produce a decorator to wrap view function to lock concurrency
+        requests for given seconds. Example::
 
             @app.route('/api', methods=['PUT'])
-            @idempotent.forget
-            def forget_me():
+            @idempotent.lock(5)
+            def api():
                 pass
 
-        :param func: Flask view function to wrap.
+        :param timeout: Lock expiration in redis, in seconds.
+        :param lock_class: Redis-py lock class to use. If passed, it will be
+           used instead of `default_redis_lock_class`.
+        :param blocking_timeout: Max blocking or wait time in seconds. Defaults
+           to ``None``, which indicates continue to try forever.
+        :param keyfunc: `keyfunc` to distinguish requests. Which can be
+           generated by `gen_keyfunc`. If passed, it will be used instead of
+           `default_keyfunc`.
 
+        Notes that if a function won't be wrapped again if it's already wrapped
+        by the ``idempotent.lock``.
         """
-        func._idempotent_forget = True
-        return func
+
+        def decorator(func):
+            return self.wrap_lock(func, timeout, lock_class=lock_class,
+                                  blocking_timeout=blocking_timeout,
+                                  keyfunc=keyfunc)
+        return decorator
 
     ###
-    # SQLAlchemy Events
+    # Utils
+    ###
+
+    def format_redis_key(self, prefix, origin_key):
+        """Format `origin_key` with redis prefix and app name.
+
+        :param origin_key: The original key without prefix.
+        :param prefix: The prefix string either ``REDIS_KEY_PREFIX_CACHE`` or
+           ``REDIS_KEY_PREFIX_LOCK``.
+        """
+        return '{0}:{1}:{2}:{3}'.format(self.redis_key_prefix, self.app.name,
+                                        prefix, origin_key)
+
+    ###
+    # SQLAlchemy Events (Cache)
     ###
 
     def register_sqlalchemy_events(self):
         """Register sqlalchemy event listeners.
 
         Note that registered hook functions will be called only if current
-        invoked view function is marked as idempotent.
+        invoked view function is marked as idempotent (by `cache`).
         """
         event.listen(self.session_factory, 'before_flush',
                      self.record_changed_instances)
@@ -241,15 +228,15 @@ class Idempotent(object):
 
     def should_call_sqlalchemy_hook(self):
         """Returns ``True`` if current invoked view function is marked as
-        idempotent.
+        idempotent (by `cache`).
         Returns ``False`` if current progress is out side flask request
         context.
         """
         if _app_ctx_stack.top is None:  # Outside flask
             return False
         view_function = self.app.view_functions.get(request.endpoint, None)
-        return view_function and getattr(view_function, '_idempotent_wrapped',
-                                         False)
+        return view_function and getattr(view_function,
+                                         '_idempotent_cache_wrapped', False)
 
     def record_changed_instances(self, session, flush_context=None,
                                  instances=None):
@@ -298,35 +285,21 @@ class Idempotent(object):
     # Idempotent Cache
     ###
 
-    def wrap_view_func(self, func, timeout=None, keyfunc=None):
-        """Wrap a flask `view_func` to be idempotent.
-
-        Notes:
-
-            1. A view function won't be wrapped again if it's already wrapped.
-            2. A view function won't be wraped if it's marked to forget.
-
-        :param timeout: Idempotent cache expiration in redis, in seconds. If
-           passed, it will be used instead of `default_timeout`.
-        :param keyfunc: `keyfunc` to distinguish requests. Which can be
-           generated by `gen_keyfunc`. If passed, it will be used instead of
-           `default_keyfunc`.
-
-        """
-        if getattr(func, '_idempotent_forget', False):
-            return func
-
-        if getattr(func, '_idempotent_wrapped', False):
+    def wrap_cache(self, func, timeout, keyfunc=None):
+        if getattr(func, '_idempotent_cache_wrapped', False):
             # Register only once.
-            return func
+            return
 
-        if timeout is None:
-            timeout = self.default_timeout
+        if self.sqlalchemy_events_registered is False:
+            # Lazy register sqlalchemy events for cache.
+            self.register_sqlalchemy_events()
+            self.sqlalchemy_events_registered = True
+
         if keyfunc is None:
             keyfunc = self.default_keyfunc
 
         @functools.wraps(func)
-        def wrapped_view_function(*args, **kwargs):
+        def _wrapped(*args, **kwargs):
             idempotent_id = keyfunc()
             cached_response = self.get_cached_response(idempotent_id)
             if cached_response is not None:
@@ -334,16 +307,11 @@ class Idempotent(object):
             response = func(*args, **kwargs)
             self.set_response_cache(idempotent_id, response, timeout)
             return response
-        wrapped_view_function._idempotent_wrapped = True
-        return wrapped_view_function
+        _wrapped._idempotent_cache_wrapped = True
+        return _wrapped
 
-    def format_redis_key(self, origin_key):
-        """Format `origin_key` with redis prefix and app name.
-
-        :param origin_key: The original key without prefix.
-        """
-        return '{0}:{1}:{2}'.format(self.redis_key_prefix, self.app.name,
-                                    origin_key)
+    def format_cache_redis_key(self, origin_key):
+        return self.format_redis_key(self.REDIS_KEY_PREFIX_CACHE, origin_key)
 
     def loads_cached_value(self, value):
         """Loads cached value into flask response and list of resource
@@ -394,7 +362,7 @@ class Idempotent(object):
            `keyfunc`.
         """
         # Get cached response and affected instances.
-        key = self.format_redis_key(idempotent_id)
+        key = self.format_cache_redis_key(idempotent_id)
         value = self.redis.get(key)
         if not value:
             return  # Miss
@@ -402,7 +370,7 @@ class Idempotent(object):
         # Get affected instances and validate
         response, instances = self.loads_cached_value(value)
         if instances:
-            keys = [self.format_redis_key(k) for k in instances]
+            keys = [self.format_cache_redis_key(k) for k in instances]
             values = self.redis.mget(keys)
             for value in values:
                 if value.decode('utf8') != idempotent_id:
@@ -421,10 +389,37 @@ class Idempotent(object):
         value, instances = self.dumps_response_and_changed_instances(response)
 
         # Cache response by `idempotent_id`.
-        key = self.format_redis_key(idempotent_id)
+        key = self.format_cache_redis_key(idempotent_id)
         self.redis.setex(key, timeout, value)
 
         # Cache affected instances.
         for instance_str in instances:
-            self.redis.setex(self.format_redis_key(instance_str), timeout,
-                             idempotent_id)
+            self.redis.setex(self.format_cache_redis_key(instance_str),
+                             timeout, idempotent_id)
+
+    ###
+    # Idempotent Lock
+    ###
+
+    def format_lock_redis_key(self, origin_key):
+        return self.format_redis_key(self.REDIS_KEY_PREFIX_LOCK, origin_key)
+
+    def wrap_lock(self, func, timeout, lock_class=None, blocking_timeout=None,
+                  keyfunc=None):
+        if getattr(func, '_idempotent_lock_wrapped', False):
+            # Register only once.
+            return
+
+        if keyfunc is None:
+            keyfunc = self.default_keyfunc
+        if lock_class is None:
+            lock_class = self.default_redis_lock_class
+
+        @functools.wraps(func)
+        def _wrapped(*args, **kwargs):
+            key = self.format_lock_redis_key(keyfunc())
+            with self.redis.lock(key, timeout=timeout, lock_class=lock_class,
+                                 blocking_timeout=blocking_timeout):
+                return func(*args, **kwargs)
+        _wrapped._idempotent_lock_wrapped = True
+        return _wrapped

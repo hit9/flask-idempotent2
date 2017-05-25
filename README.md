@@ -1,8 +1,11 @@
 flask-idempotent2
 =================
 
-Redis based automatic idempotent support for sqlalchemy based flask
-applications. 
+Redis based automatic idempotent and concurrency lock support for 
+sqlalchemy based flask applications. 
+
+Idempotent
+----------
 
 It caches responses in redis by `request_id`, requests in a short time with the same `request_id` would get the same response. But a cached response will be expired if any its affected db resources are last changed by other requests.
 
@@ -12,7 +15,17 @@ from flask_idempotent2 import Idempotent
 idempotent = Idempotent(app, redis_client, DBSession) # DBSession: SQLAlchemy Session
 
 @app.route('/api', methods=['PUT'])
-@idempotent
+@idempotent.cache(15)  # Cache result for 15s
+def api():
+    pass
+```
+
+Requests Lock
+-------------
+
+```python
+@app.route('/api', methods=['PUT'])
+@idempotent.lock(3)   # Lock concurrency requests for 3s
 def api():
     pass
 ```
@@ -24,39 +37,8 @@ Installation
 pip install flask_idempotent2
 ```
 
-Usage
------
-
-* Register view function via decorator:
-
-   ```python
-   @app.route('/api1')
-   @idempotent
-   def api1():
-       pass
-
-   @app.route('/api2')
-   @idempotent.parametrize(timeout=60)
-   def api2():
-       pass
-   ```
-
-* Automatically discover view functions to register (`PUT/GET/DELETE`methods by default):
-
-   ```
-   idempotent.auto_register()
-   ```
-
-   Tell `flask_idempotent2` to forget a view function when use `auto_register`:
-
-   ```
-   @idempotent.forget
-   def dont_wrap_me():
-       pass
-   ```
-
-Details
--------
+Cache Details
+-------------
 
 ### Here's how it works, in brief:
 

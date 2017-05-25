@@ -44,7 +44,8 @@ def test_keyfunc_method(app):
 
 
 def test_keyfunc_method_inv(app):
-    default_keyfunc = gen_keyfunc(use_checksum=False, method=False)
+    default_keyfunc = gen_keyfunc(use_checksum=False, method=False,
+                                  endpoint=False)
     with app.test_request_context(method='GET', path='/user/1'):
         key1 = default_keyfunc()
     with app.test_request_context(method='POST', path='/user/1'):

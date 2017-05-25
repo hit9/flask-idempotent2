@@ -3,6 +3,7 @@
 import json
 import sys
 import random
+import functools
 
 from flask import Flask, _app_ctx_stack, request, jsonify
 from sqlalchemy import create_engine, Column, String, Integer, text
@@ -12,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from flask_idempotent2 import Idempotent
 import redis
 import pytest
+import gevent
 
 
 ###
@@ -79,6 +81,7 @@ def app(db_clear, redis_client, redis_clear):
     idempotent = Idempotent(app, redis_client, Session)
 
     def defer_commit(func):
+        @functools.wraps(func)
         def wrapped(*args, **kwargs):
             ret = func(*args, **kwargs)
             session = Session()
@@ -100,7 +103,7 @@ def app(db_clear, redis_client, redis_clear):
         Session.remove()
 
     @app.route('/user', methods=['PUT'])
-    @idempotent.parametrize(timeout=1)
+    @idempotent.cache(1)
     @defer_commit
     def create_user():
         data = request.get_json()
@@ -108,112 +111,44 @@ def app(db_clear, redis_client, redis_clear):
         Session().add(user)
         return jsonify(email=user.email, password=user.password)
 
+    @app.route('/user_or_return', methods=['PUT'])
+    @idempotent.lock(1)
+    @defer_commit
+    def create_or_return_user():
+        data = request.get_json()
+        user = Session().query(User)\
+            .filter(User.email == data['email'])\
+            .scalar()
+        if not user:
+            user = User(email=data['email'], password=data['password'])
+            Session().add(user)
+        return jsonify(email=user.email, password=user.password)
+
+    @app.route('/user_or_return_nolock', methods=['PUT'])
+    @defer_commit
+    def create_or_return_user_no_lock():
+        data = request.get_json()
+        user = Session().query(User)\
+            .filter(User.email == data['email'])\
+            .scalar()
+        # Assume the query above is a little slow
+        gevent.sleep(0.1)
+        if not user:
+            user = User(email=data['email'], password=data['password'])
+            Session().add(user)
+        return jsonify(email=user.email, password=user.password)
+
     @app.route('/user/<int:id>', methods=['GET'])
-    @idempotent.parametrize(timeout=1)
+    @idempotent.cache(1)
     def get_user(id):
         return Session().query(User).get(id)
 
     @app.route('/random', methods=['GET'])
-    @idempotent.parametrize(timeout=1)
+    @idempotent.cache(1)
     def get_random():
         return jsonify(result=random.randint(1, 1000))
 
     app.secret_key = 'secret'
-    return app
-
-
-@pytest.fixture(scope='function')
-def auto_registered_app(db_clear, redis_client, redis_clear):
-    Session = scoped_session(sessionmaker(bind=engine,
-                                          autocommit=False,
-                                          expire_on_commit=False),
-                             scopefunc=_app_ctx_stack.__ident_func__)
-    app = Flask(__name__)
-    idempotent = Idempotent(app, redis_client, Session)
-
-    def defer_commit(func):
-        def wrapped(*args, **kwargs):
-            ret = func(*args, **kwargs)
-            session = Session()
-            try:
-                session.flush()
-                session.commit()
-            except SQLAlchemyError as exc:
-                session.rollback()
-                raise exc
-            return ret
-        return wrapped
-
-    @app.errorhandler(SQLAlchemyError)
-    def handle_sqlalchemy_exc(exc):
-        return jsonify(message='database error'), 500
-
-    @app.teardown_request
-    def close_session(exc):
-        Session.remove()
-
-    @app.route('/user', methods=['PUT'])
-    @defer_commit
-    def create_user():
-        data = request.get_json()
-        user = User(email=data['email'], password=data['password'])
-        Session().add(user)
-        return jsonify(email=user.email, password=user.password)
-
-    @app.route('/user/<int:id>', methods=['GET'])
-    def get_user(id):
-        return Session().query(User).get(id)
-
-    app.secret_key = 'secret'
-    idempotent.auto_register()
-    return app
-
-
-@pytest.fixture(scope='function')
-def with_forget_app(db_clear, redis_client, redis_clear):
-    Session = scoped_session(sessionmaker(bind=engine,
-                                          autocommit=False,
-                                          expire_on_commit=False),
-                             scopefunc=_app_ctx_stack.__ident_func__)
-    app = Flask(__name__)
-    idempotent = Idempotent(app, redis_client, Session)
-
-    def defer_commit(func):
-        def wrapped(*args, **kwargs):
-            ret = func(*args, **kwargs)
-            session = Session()
-            try:
-                session.flush()
-                session.commit()
-            except SQLAlchemyError as exc:
-                session.rollback()
-                raise exc
-            return ret
-        return wrapped
-
-    @app.errorhandler(SQLAlchemyError)
-    def handle_sqlalchemy_exc(exc):
-        return jsonify(message='database error'), 500
-
-    @app.teardown_request
-    def close_session(exc):
-        Session.remove()
-
-    @app.route('/user', methods=['PUT'])
-    @defer_commit
-    def create_user():
-        data = request.get_json()
-        user = User(email=data['email'], password=data['password'])
-        Session().add(user)
-        return jsonify(email=user.email, password=user.password)
-
-    @app.route('/user/<int:id>', methods=['GET'])
-    @idempotent.forget
-    def get_user(id):
-        return Session().query(User).get(id)
-
-    app.secret_key = 'secret'
-    idempotent.auto_register()
     return app
 
 
